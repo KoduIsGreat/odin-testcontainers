@@ -7,7 +7,7 @@ Inspired by [testcontainers](https://testcontainers.com).
 
 ```odin
 import docker "testcontainers:docker"
-import postgres "docker:modules/postgres"
+import postgres "testcontainers:modules/postgres"
 
 client := docker.make_client()
 
