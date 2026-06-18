@@ -1,14 +1,15 @@
-# testcontainers for Odin
+# docker for Odin
 
-Throwaway Docker containers for integration tests, written in pure [Odin](https://odin-lang.org). Spin up a real Postgres, Redis, or anything that runs in a container, wait until it's actually ready, talk to it over its mapped port, and have it cleaned up automatically — even if your test process crashes.
+Throwaway Docker containers for integration tests, written in pure [Odin](https://odin-lang.org). 
+Spin up a real Postgres, Redis, or anything that runs in a container, wait until it's actually ready, talk to it over its mapped port, and have it cleaned up automatically — even if your test process crashes.
 
-Inspired by [Testcontainers](https://testcontainers.com).
+Inspired by [testcontainers](https://testcontainers.com).
 
 ```odin
-import testcontainers "testcontainers:."
-import postgres "testcontainers:modules/postgres"
+import docker "testcontainers:docker"
+import postgres "docker:modules/postgres"
 
-client := testcontainers.make_client()
+client := docker.make_client()
 
 pg, ok := postgres.start(client, postgres.Config{password = "secret", database = "appdb"})
 defer postgres.stop(&pg)
@@ -31,7 +32,7 @@ Integration tests want real dependencies, not mocks — but managing their lifec
 
 - **Zero dependencies.** Only the Odin `core` library. No CGo, no libcurl, no Docker SDK.
 - **Talks to the Docker Engine API directly** over its Unix socket via `core:sys/posix` (`core:net` is IP-only and can't reach a Unix socket). The HTTP/1.1 client and JSON handling are purpose-built and small.
-- **Crash-safe cleanup** via [Ryuk](https://github.com/testcontainers/moby-ryuk) — the same resource reaper the official Testcontainers projects use.
+- **Crash-safe cleanup** via [Ryuk](https://github.com/docker/moby-ryuk) — the same resource reaper the official Testcontainers projects use.
 
 ## Requirements
 
@@ -43,7 +44,9 @@ The daemon socket is auto-discovered (see [Configuration](#configuration)). No m
 
 ## Installation
 
-The library is consumed as an [Odin collection](https://odin-lang.org/docs/overview/#import-statement). Point a collection named `testcontainers` at the repo root, then import the root package with `"testcontainers:."` and modules with `"testcontainers:modules/<name>"`:
+The library is consumed as an [Odin collection](https://odin-lang.org/docs/overview/#import-statement). Point a collection 
+named `testcontainers` at the repo root, then import the docker package with `import "testcontainers:docker"` and modules 
+with `"testcontainers:modules/<name>"`:
 
 ```sh
 odin build your_app -collection:testcontainers=/path/to/odin-test-containers
@@ -58,7 +61,7 @@ For editor/LSP support, add the collection to your `ols.json`:
 ## Project layout
 
 ```
-.                       package testcontainers   ← the library
+package docker   ← the library
   transport.odin          AF_UNIX bytes to the Docker daemon (core:sys/posix)
   http.odin               purpose-built HTTP/1.1: request build + response parse
   client.odin             make_client (socket resolution) + request()
@@ -76,32 +79,30 @@ example/
 
 ### Container
 
-A `Container` is one type for the whole lifecycle: you configure it with the `with_*` helpers, `start` it, then use the same value to look up ports, inspect, and re-check readiness. (This mirrors Testcontainers' `GenericContainer`.)
+A `Container` is one type for the whole lifecycle: you configure it with the `with_*` helpers, `start` it, then use the same value to look up ports, inspect, and re-check readiness. (This mirrors docker' `GenericContainer`.)
 
 ```odin
-import testcontainers "testcontainers:."
+import docker "testcontainers:docker"
 
-client := testcontainers.make_client()
+client := docker.make_client()
 
-c := testcontainers.new_container("nginx:alpine")
-defer testcontainers.container_destroy(&c)
+c := docker.new_container("nginx:alpine")
+defer docker.container_destroy(&c)
 
-testcontainers.with_exposed_port(&c, "80/tcp")
-testcontainers.with_env(&c, "SOME_VAR", "value")
-testcontainers.with_wait(&c, testcontainers.Wait_Http{port = "80/tcp", path = "/", status = 200})
+docker.with_exposed_port(&c, "80/tcp")
+docker.with_env(&c, "SOME_VAR", "value")
+docker.with_wait(&c, testcontainers.Wait_Http{port = "80/tcp", path = "/", status = 200})
 
-if !testcontainers.start(&c, client) {
+if !docker.start(&c, client) {
 	// failed to start or never became ready
 }
-defer testcontainers.remove_container(c)
+defer docker.remove_container(c)
 
-port, _ := testcontainers.mapped_port(c, "80/tcp") // -> ephemeral host port
-// connect to testcontainers.host(c):port
+port, _ := docker.mapped_port(c, "80/tcp") // -> ephemeral host port
+// connect to docker.host(c):port
 ```
 
 `start` does everything — ensures the reaper, pulls the image, creates + starts the container, and waits for the configured readiness strategy.
-
-Configuration helpers (each returns the container pointer, so they nest; statement style reads best):
 
 | Helper | Purpose |
 |---|---|
@@ -119,19 +120,19 @@ A started container is not necessarily *ready*. Set the signal that actually mea
 
 ```odin
 // TCP: a mapped port accepts a connection
-testcontainers.Wait_Port{port = "6379/tcp"}
+docker.Wait_Port{port = "6379/tcp"}
 
 // Log: a substring appears in stdout/stderr
-testcontainers.Wait_Log{text = "database system is ready to accept connections"}
+docker.Wait_Log{text = "database system is ready to accept connections"}
 
 // HTTP: a GET to a mapped port returns the expected status (0 = any 2xx)
-testcontainers.Wait_Http{port = "80/tcp", path = "/health", status = 200}
+docker.Wait_Http{port = "80/tcp", path = "/health", status = 200}
 
 // Healthcheck: the container's Docker HEALTHCHECK reports "healthy"
-testcontainers.Wait_Healthcheck{}
+docker.Wait_Healthcheck{}
 
 // Func: your own probe, polled until it returns true
-testcontainers.Wait_Func{probe = my_probe}
+docker.Wait_Func{probe = my_probe}
 ```
 
 #### Custom waits
@@ -139,14 +140,14 @@ testcontainers.Wait_Func{probe = my_probe}
 `Wait_Func` makes readiness fully extensible — a module or an application can register any probe. It receives the live container, so it can read mapped ports and configured env:
 
 ```odin
-my_probe :: proc(c: ^testcontainers.Container, user_data: rawptr) -> bool {
-	port, ok := testcontainers.mapped_port(c^, "5432/tcp")
+my_probe :: proc(c: ^docker.Container, user_data: rawptr) -> bool {
+	port, ok := docker.mapped_port(c^, "5432/tcp")
 	if !ok { return false }
 	// ...attempt a real connection / handshake against 127.0.0.1:port...
 	return connected
 }
 
-testcontainers.with_wait(&c, testcontainers.Wait_Func{probe = my_probe})
+docker.with_wait(&c, testcontainers.Wait_Func{probe = my_probe})
 ```
 
 The Postgres module (below) uses exactly this — its readiness check is a `Wait_Func` that performs the Postgres v3 startup handshake.
@@ -156,19 +157,11 @@ The Postgres module (below) uses exactly this — its readiness check is a `Wait
 Beyond `start`, you can drive pieces directly:
 
 ```odin
-testcontainers.pull_image(client, "redis:alpine")
-insp, _ := testcontainers.inspect_container(c)   // typed Inspect: State, Health, Ports
-port, _ := testcontainers.mapped_port(c, "6379/tcp")
-val, _  := testcontainers.container_env(c, "POSTGRES_USER")
-testcontainers.remove_container(c)
-```
-
-And the raw Docker API, if you need an endpoint that isn't wrapped yet:
-
-```odin
-resp, ok := testcontainers.request(client, "GET", "/version")
-defer testcontainers.response_destroy(&resp)
-// resp.status, resp.headers, resp.body ([]u8, ready for json.unmarshal)
+docker.pull_image(client, "redis:alpine")
+insp, _ := docker.inspect_container(c)   // typed Inspect: State, Health, Ports
+port, _ := docker.mapped_port(c, "6379/tcp")
+val, _  := docker.container_env(c, "POSTGRES_USER")
+docker.remove_container(c)
 ```
 
 ## Modules
@@ -178,7 +171,7 @@ Module presets package a sensible image, configuration, readiness strategy, and 
 ### Postgres
 
 ```odin
-import postgres "testcontainers:modules/postgres"
+import postgres "docker:modules/postgres"
 
 pg, ok := postgres.start(client, postgres.Config{
 	image    = "postgres:16-alpine", // optional; this is the default
@@ -189,7 +182,7 @@ pg, ok := postgres.start(client, postgres.Config{
 defer postgres.stop(&pg)
 
 url := postgres.connection_string(pg)
-// pg is a Container too: testcontainers.mapped_port(pg, "5432/tcp"), etc.
+// pg is a Container too: docker.mapped_port(pg, "5432/tcp"), etc.
 ```
 
 Readiness is gated on a custom `Wait_Func` that performs the Postgres v3 startup handshake — a real connection test — so by the time `start` returns the server genuinely accepts connections.
@@ -201,7 +194,7 @@ Two layers:
 1. **Explicit** — `remove_container(c)` / `postgres.stop(&pg)`, typically via `defer`.
 2. **Ryuk reaper** — for everything `defer` can't cover (panics, `os.exit`, `kill -9`).
 
-On first container creation the library starts the `testcontainers/ryuk` sidecar and holds a TCP connection to it, registering a per-process session label. Every container the library creates is tagged with that label. When your process dies and the connection drops, Ryuk reaps every container carrying the label. This is the only cleanup that survives a hard crash — and it's why you should never rely on `defer` alone.
+On first container creation the library starts the `docker/ryuk` sidecar and holds a TCP connection to it, registering a per-process session label. Every container the library creates is tagged with that label. When your process dies and the connection drops, Ryuk reaps every container carrying the label. This is the only cleanup that survives a hard crash — and it's why you should never rely on `defer` alone.
 
 Disable it (e.g. in CI that handles its own cleanup) with `OTC_RYUK_DISABLED=1`.
 
@@ -221,7 +214,7 @@ Disable it (e.g. in CI that handles its own cleanup) with `OTC_RYUK_DISABLED=1`.
 Override explicitly when needed:
 
 ```odin
-client := testcontainers.make_client("/Users/me/.rd/docker.sock")
+client := docker.make_client("/Users/me/.rd/docker.sock") // this is rancher desktop
 ```
 
 ### Environment variables

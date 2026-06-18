@@ -1,4 +1,4 @@
-package testcontainers
+package docker
 
 // The one-call API: request(client, method, path, body) -> Response.
 // Each call opens a fresh connection (Connection: close). Keep-alive can come
@@ -77,7 +77,11 @@ context_socket :: proc(name: string, allocator := context.temp_allocator) -> str
 	if home == "" {
 		return ""
 	}
-	meta_path := fmt.tprintf("%s/.docker/contexts/meta/%s/meta.json", home, sha256_hex(name, allocator))
+	meta_path := fmt.tprintf(
+		"%s/.docker/contexts/meta/%s/meta.json",
+		home,
+		sha256_hex(name, allocator),
+	)
 	data, rerr := os.read_entire_file(meta_path, allocator)
 	if rerr != nil {
 		return ""

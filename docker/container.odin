@@ -1,4 +1,4 @@
-package testcontainers
+package docker
 
 // The Container type and its lifecycle. A Container is configured (via the
 // with_* builders in builder.odin), then start()ed, after which it carries its
@@ -16,8 +16,8 @@ import "base:runtime"
 
 Container :: struct {
 	// Runtime identity — populated by start().
-	client: Client,
-	id:     string,
+	client:          Client,
+	id:              string,
 
 	// Configuration — set with the with_* builders, retained after start().
 	image:           string,
@@ -25,11 +25,10 @@ Container :: struct {
 	env:             [dynamic]string,
 	cmd:             [dynamic]string,
 	healthcheck:     [dynamic]string, // Docker Test form, e.g. {"CMD-SHELL", "..."}
-	name:            string,          // optional; Docker auto-names if empty
-	wait:            Wait_Strategy,   // nil = don't wait for readiness
-	startup_timeout: time.Duration,   // 0 = DEFAULT_STARTUP_TIMEOUT
-
-	allocator: runtime.Allocator,
+	name:            string, // optional; Docker auto-names if empty
+	wait:            Wait_Strategy, // nil = don't wait for readiness
+	startup_timeout: time.Duration, // 0 = DEFAULT_STARTUP_TIMEOUT
+	allocator:       runtime.Allocator,
 }
 
 // --- Wire structs (Docker API JSON shapes) -------------------------------
@@ -43,28 +42,28 @@ Wire_Port_Binding :: struct {
 @(private)
 Wire_Host_Config :: struct {
 	PortBindings: map[string][]Wire_Port_Binding `json:"PortBindings,omitempty"`,
-	Binds:        []string                       `json:"Binds,omitempty"`,
-	Privileged:   bool                           `json:"Privileged,omitempty"`,
-	AutoRemove:   bool                           `json:"AutoRemove,omitempty"`,
+	Binds:        []string `json:"Binds,omitempty"`,
+	Privileged:   bool `json:"Privileged,omitempty"`,
+	AutoRemove:   bool `json:"AutoRemove,omitempty"`,
 }
 
 @(private)
 Wire_Healthcheck :: struct {
-	Test:     []string `json:"Test"`,               // e.g. {"CMD-SHELL", "..."}
-	Interval: i64      `json:"Interval,omitempty"`,  // nanoseconds
-	Timeout:  i64      `json:"Timeout,omitempty"`,   // nanoseconds
-	Retries:  int      `json:"Retries,omitempty"`,
+	Test:     []string `json:"Test"`, // e.g. {"CMD-SHELL", "..."}
+	Interval: i64 `json:"Interval,omitempty"`, // nanoseconds
+	Timeout:  i64 `json:"Timeout,omitempty"`, // nanoseconds
+	Retries:  int `json:"Retries,omitempty"`,
 }
 
 @(private)
 Wire_Create :: struct {
-	Image:        string                          `json:"Image"`,
-	Cmd:          []string                        `json:"Cmd,omitempty"`,
-	Env:          []string                        `json:"Env,omitempty"`,
-	Labels:       map[string]string               `json:"Labels,omitempty"`,
-	ExposedPorts: map[string]struct {}            `json:"ExposedPorts,omitempty"`,
-	Healthcheck:  Maybe(Wire_Healthcheck)         `json:"Healthcheck,omitempty"`,
-	HostConfig:   Wire_Host_Config                `json:"HostConfig"`,
+	Image:        string `json:"Image"`,
+	Cmd:          []string `json:"Cmd,omitempty"`,
+	Env:          []string `json:"Env,omitempty"`,
+	Labels:       map[string]string `json:"Labels,omitempty"`,
+	ExposedPorts: map[string]struct {} `json:"ExposedPorts,omitempty"`,
+	Healthcheck:  Maybe(Wire_Healthcheck) `json:"Healthcheck,omitempty"`,
+	HostConfig:   Wire_Host_Config `json:"HostConfig"`,
 }
 
 // Subset of `GET /containers/{id}/json` we care about.
@@ -78,9 +77,9 @@ Container_Health :: struct {
 }
 
 Container_State :: struct {
-	Status:   string           `json:"Status"`,
-	Running:  bool             `json:"Running"`,
-	ExitCode: int              `json:"ExitCode"`,
+	Status:   string `json:"Status"`,
+	Running:  bool `json:"Running"`,
+	ExitCode: int `json:"ExitCode"`,
 	Health:   Container_Health `json:"Health"`,
 }
 
@@ -89,8 +88,8 @@ Network_Settings :: struct {
 }
 
 Inspect :: struct {
-	Id:              string           `json:"Id"`,
-	State:           Container_State  `json:"State"`,
+	Id:              string `json:"Id"`,
+	State:           Container_State `json:"State"`,
 	NetworkSettings: Network_Settings `json:"NetworkSettings"`,
 }
 
@@ -131,7 +130,13 @@ pull_image :: proc(client: Client, image: string, allocator := context.allocator
 	return resp.status == 200
 }
 
-inspect_container :: proc(c: Container, allocator := context.allocator) -> (insp: Inspect, ok: bool) {
+inspect_container :: proc(
+	c: Container,
+	allocator := context.allocator,
+) -> (
+	insp: Inspect,
+	ok: bool,
+) {
 	path := fmt.tprintf("/containers/%s/json", c.id)
 	resp := request(c.client, "GET", path, allocator = allocator) or_return
 	defer response_destroy(&resp, allocator)
@@ -217,7 +222,9 @@ container_create :: proc(c: ^Container) -> (ok: bool) {
 		wire.ExposedPorts[key] = {}
 		// Empty HostPort => Docker auto-assigns an ephemeral host port.
 		bindings := make([]Wire_Port_Binding, 1, context.temp_allocator)
-		bindings[0] = Wire_Port_Binding{HostPort = ""}
+		bindings[0] = Wire_Port_Binding {
+			HostPort = "",
+		}
 		wire.HostConfig.PortBindings[key] = bindings
 	}
 

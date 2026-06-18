@@ -1,4 +1,4 @@
-package testcontainers
+package docker
 
 // Tight, purpose-built HTTP/1.1 for the Docker API. We only ever need:
 //   - serialize a request with an optional body
@@ -10,6 +10,7 @@ import "core:bytes"
 import "core:strconv"
 import "core:strings"
 
+@(private)
 Response :: struct {
 	status:  int,
 	reason:  string,
@@ -142,6 +143,7 @@ decode_chunked :: proc(data: []u8, allocator := context.allocator) -> (out: []u8
 	return acc[:], true
 }
 
+@(private)
 response_destroy :: proc(resp: ^Response, allocator := context.allocator) {
 	for k, v in resp.headers {
 		delete(k, allocator)

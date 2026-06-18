@@ -1,4 +1,4 @@
-package testcontainers
+package docker
 
 // Raw AF_UNIX byte transport to the Docker daemon. No core:net (IP-only),
 // just core:sys/posix. This is the only OS-touching layer in the package.
@@ -55,7 +55,13 @@ dial :: proc(socket_path: string) -> (conn: Connection, ok: bool) {
 // a proxy that accepts the connection but never completes the handshake would
 // hang connect() forever.
 @(private)
-connect_with_timeout :: proc(fd: posix.FD, addr: ^posix.sockaddr_un, d: time.Duration) -> (ok: bool) {
+connect_with_timeout :: proc(
+	fd: posix.FD,
+	addr: ^posix.sockaddr_un,
+	d: time.Duration,
+) -> (
+	ok: bool,
+) {
 	flags := posix.fcntl(fd, .GETFL)
 	if flags == -1 {
 		return false
@@ -127,7 +133,13 @@ send_all :: proc(conn: Connection, data: []u8) -> (ok: bool) {
 // Read until the peer closes the connection (we send `Connection: close`,
 // so the daemon EOFs once the full response is written).
 @(private)
-read_all :: proc(conn: Connection, allocator := context.allocator) -> (data: [dynamic]u8, ok: bool) {
+read_all :: proc(
+	conn: Connection,
+	allocator := context.allocator,
+) -> (
+	data: [dynamic]u8,
+	ok: bool,
+) {
 	data = make([dynamic]u8, 0, 4096, allocator)
 	buf: [4096]u8
 	for {

@@ -1,4 +1,4 @@
-package testcontainers
+package docker
 
 // Readiness strategies. A container that is "started" is not necessarily
 // "ready" — wait_until_ready polls the container's configured strategy until it
@@ -26,11 +26,11 @@ set_net_timeouts :: proc(sock: net.TCP_Socket, d: time.Duration) {
 }
 
 Wait_Strategy :: union {
-	Wait_Port,        // a mapped container port accepts a TCP connection
-	Wait_Log,         // a substring appears in the container's logs
-	Wait_Http,        // an HTTP GET to a mapped port returns an expected status
+	Wait_Port, // a mapped container port accepts a TCP connection
+	Wait_Log, // a substring appears in the container's logs
+	Wait_Http, // an HTTP GET to a mapped port returns an expected status
 	Wait_Healthcheck, // the container's Docker HEALTHCHECK reports healthy
-	Wait_Func,        // a user-supplied probe (custom readiness check)
+	Wait_Func, // a user-supplied probe (custom readiness check)
 }
 
 Wait_Port :: struct {
@@ -44,7 +44,7 @@ Wait_Log :: struct {
 Wait_Http :: struct {
 	port:   string, // container port to hit, e.g. "80/tcp"
 	path:   string, // request path, e.g. "/health"
-	status: int,    // expected status; 0 means "any 2xx"
+	status: int, // expected status; 0 means "any 2xx"
 }
 
 Wait_Healthcheck :: struct {}

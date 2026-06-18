@@ -1,4 +1,4 @@
-package testcontainers
+package docker
 
 // Construction helpers for a Container. Configure incrementally, then start():
 //
@@ -16,12 +16,12 @@ import "core:time"
 
 new_container :: proc(image: string, allocator := context.allocator) -> Container {
 	return Container {
-		image         = image,
-		allocator     = allocator,
+		image = image,
+		allocator = allocator,
 		exposed_ports = make([dynamic]string, allocator),
-		env           = make([dynamic]string, allocator),
-		cmd           = make([dynamic]string, allocator),
-		healthcheck   = make([dynamic]string, allocator),
+		env = make([dynamic]string, allocator),
+		cmd = make([dynamic]string, allocator),
+		healthcheck = make([dynamic]string, allocator),
 	}
 }
 
@@ -40,44 +40,37 @@ container_destroy :: proc(c: ^Container) {
 	}
 }
 
-with_exposed_port :: proc(c: ^Container, port: string) -> ^Container {
+with_exposed_port :: proc(c: ^Container, port: string) {
 	append(&c.exposed_ports, port)
-	return c
 }
 
-with_env :: proc(c: ^Container, key, value: string) -> ^Container {
+with_env :: proc(c: ^Container, key, value: string) {
 	append(&c.env, fmt.aprintf("%s=%s", key, value, allocator = c.allocator))
-	return c
 }
 
-with_cmd :: proc(c: ^Container, args: ..string) -> ^Container {
+with_cmd :: proc(c: ^Container, args: ..string) {
 	for a in args {
 		append(&c.cmd, a)
 	}
-	return c
 }
 
-with_name :: proc(c: ^Container, name: string) -> ^Container {
+with_name :: proc(c: ^Container, name: string) {
 	c.name = name
-	return c
 }
 
 // Set a container HEALTHCHECK (Docker Test form), e.g.
 // with_healthcheck(&c, "CMD-SHELL", "pg_isready -U postgres"). Pairs with
 // Wait_Healthcheck.
-with_healthcheck :: proc(c: ^Container, test: ..string) -> ^Container {
+with_healthcheck :: proc(c: ^Container, test: ..string) {
 	for t in test {
 		append(&c.healthcheck, t)
 	}
-	return c
 }
 
-with_wait :: proc(c: ^Container, strategy: Wait_Strategy) -> ^Container {
+with_wait :: proc(c: ^Container, strategy: Wait_Strategy) {
 	c.wait = strategy
-	return c
 }
 
-with_startup_timeout :: proc(c: ^Container, d: time.Duration) -> ^Container {
+with_startup_timeout :: proc(c: ^Container, d: time.Duration) {
 	c.startup_timeout = d
-	return c
 }

@@ -1,4 +1,4 @@
-package testcontainers
+package docker
 
 // Ryuk-based crash-safe cleanup. We start the testcontainers/ryuk sidecar,
 // hold a TCP connection to it, and register a label filter. When our process
@@ -34,6 +34,7 @@ g_reaper_active: bool
 g_reaper_sock: net.TCP_Socket
 
 // Per-process session id, generated once. Stamped onto every managed container.
+@(private)
 session_id :: proc() -> string {
 	if g_session_id == "" {
 		g_session_id = fmt.aprintf("otc-%x", time.to_unix_nanoseconds(time.now()))
@@ -50,6 +51,7 @@ reaper_disabled :: proc() -> bool {
 // Ensure Ryuk is running and our filter is registered. Idempotent and
 // best-effort: a false return means no crash-safety net (callers still work,
 // relying on explicit remove_container).
+@(private)
 ensure_reaper :: proc(client: Client) -> (ok: bool) {
 	if g_reaper_active {
 		return true
@@ -72,7 +74,9 @@ ensure_reaper :: proc(client: Client) -> (ok: bool) {
 	wire.ExposedPorts[REAPER_PORT] = {}
 	wire.HostConfig.PortBindings = make(map[string][]Wire_Port_Binding, context.temp_allocator)
 	pb := make([]Wire_Port_Binding, 1, context.temp_allocator)
-	pb[0] = Wire_Port_Binding{HostPort = ""}
+	pb[0] = Wire_Port_Binding {
+		HostPort = "",
+	}
 	wire.HostConfig.PortBindings[REAPER_PORT] = pb
 	wire.HostConfig.Binds = []string {
 		strings.concatenate({DAEMON_SOCKET, ":", DAEMON_SOCKET}, context.temp_allocator),
@@ -86,7 +90,10 @@ ensure_reaper :: proc(client: Client) -> (ok: bool) {
 	if !created {
 		return false
 	}
-	reaper := Container{client = client, id = rid}
+	reaper := Container {
+		client = client,
+		id     = rid,
+	}
 	if !container_start(reaper) {
 		return false
 	}
@@ -112,7 +119,14 @@ ensure_reaper :: proc(client: Client) -> (ok: bool) {
 // port-forwarder accepts the TCP connection before Ryuk is actually listening
 // inside the container, so a plain blocking recv would hang forever.
 @(private)
-reaper_handshake :: proc(host_port: int, filter: string, timeout: time.Duration) -> (sock: net.TCP_Socket, ok: bool) {
+reaper_handshake :: proc(
+	host_port: int,
+	filter: string,
+	timeout: time.Duration,
+) -> (
+	sock: net.TCP_Socket,
+	ok: bool,
+) {
 	start := time.tick_now()
 	for time.tick_since(start) < timeout {
 		s, derr := net.dial_tcp(net.Endpoint{address = net.IP4_Loopback, port = host_port})
