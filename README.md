@@ -1,4 +1,4 @@
-# docker for Odin
+# Testcontainers for Odin
 
 Throwaway Docker containers for integration tests, written in pure [Odin](https://odin-lang.org). 
 Spin up a real Postgres, Redis, or anything that runs in a container, wait until it's actually ready, talk to it over its mapped port, and have it cleaned up automatically — even if your test process crashes.
