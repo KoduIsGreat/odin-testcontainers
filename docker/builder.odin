@@ -1,4 +1,4 @@
-package docker
+package tc_docker
 
 // Construction helpers for a Container. Configure incrementally, then start():
 //

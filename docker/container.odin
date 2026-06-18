@@ -1,4 +1,4 @@
-package docker
+package tc_docker
 
 // The Container type and its lifecycle. A Container is configured (via the
 // with_* builders in builder.odin), then start()ed, after which it carries its

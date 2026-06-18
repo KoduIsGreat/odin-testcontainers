@@ -1,4 +1,4 @@
-package docker
+package tc_docker
 
 // Raw AF_UNIX byte transport to the Docker daemon. No core:net (IP-only),
 // just core:sys/posix. This is the only OS-touching layer in the package.

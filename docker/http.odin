@@ -1,4 +1,4 @@
-package docker
+package tc_docker
 
 // Tight, purpose-built HTTP/1.1 for the Docker API. We only ever need:
 //   - serialize a request with an optional body

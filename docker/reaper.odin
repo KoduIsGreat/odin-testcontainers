@@ -1,4 +1,4 @@
-package docker
+package tc_docker
 
 // Ryuk-based crash-safe cleanup. We start the testcontainers/ryuk sidecar,
 // hold a TCP connection to it, and register a label filter. When our process

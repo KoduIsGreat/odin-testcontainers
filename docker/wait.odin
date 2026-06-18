@@ -1,4 +1,4 @@
-package docker
+package tc_docker
 
 // Readiness strategies. A container that is "started" is not necessarily
 // "ready" — wait_until_ready polls the container's configured strategy until it

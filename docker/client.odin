@@ -1,4 +1,4 @@
-package docker
+package tc_docker
 
 // The one-call API: request(client, method, path, body) -> Response.
 // Each call opens a fresh connection (Connection: close). Keep-alive can come
