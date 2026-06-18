@@ -1,4 +1,4 @@
-package postgres
+package module_postgres
 
 // Postgres module preset. A Postgres IS a docker.Container (embedded),
 // configured with the right env and a custom readiness probe that performs the
