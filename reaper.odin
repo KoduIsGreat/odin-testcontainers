@@ -82,11 +82,12 @@ ensure_reaper :: proc(client: Client) -> (ok: bool) {
 	// own containers don't accumulate across runs.
 	wire.HostConfig.AutoRemove = true
 
-	reaper, created := create_from_wire(client, wire)
+	rid, created := create_from_wire(client, wire)
 	if !created {
 		return false
 	}
-	if !start_container(reaper) {
+	reaper := Container{client = client, id = rid}
+	if !container_start(reaper) {
 		return false
 	}
 

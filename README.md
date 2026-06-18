@@ -11,7 +11,7 @@ import postgres "testcontainers:modules/postgres"
 client := testcontainers.make_client()
 
 pg, ok := postgres.start(client, postgres.Config{password = "secret", database = "appdb"})
-defer postgres.stop(pg)
+defer postgres.stop(&pg)
 
 url := postgres.connection_string(pg)
 // postgresql://postgres:secret@127.0.0.1:32802/appdb?sslmode=disable
@@ -62,9 +62,9 @@ For editor/LSP support, add the collection to your `ols.json`:
   transport.odin          AF_UNIX bytes to the Docker daemon (core:sys/posix)
   http.odin               purpose-built HTTP/1.1: request build + response parse
   client.odin             make_client (socket resolution) + request()
-  container.odin          pull / create / start / inspect / remove / run / mapped_port
+  container.odin          Container type + lifecycle: start / pull / inspect / remove / mapped_port
   wait.odin               wait strategies
-  builder.odin            Generic_Container builder
+  builder.odin            container construction helpers (new_container + with_*)
   reaper.odin             Ryuk crash-safe cleanup
 modules/
   postgres/               package postgres   ← a module preset
@@ -74,60 +74,48 @@ example/
 
 ## Usage
 
-### The one-liner: `run`
+### Container
 
-`run` does everything — ensures the reaper, pulls the image, creates and starts the container, and waits for readiness:
+A `Container` is one type for the whole lifecycle: you configure it with the `with_*` helpers, `start` it, then use the same value to look up ports, inspect, and re-check readiness. (This mirrors Testcontainers' `GenericContainer`.)
 
 ```odin
 import testcontainers "testcontainers:."
 
 client := testcontainers.make_client()
 
-c, ok := testcontainers.run(client, testcontainers.Container_Request{
-	image         = "redis:alpine",
-	exposed_ports = {"6379/tcp"},
-	wait          = testcontainers.Wait_Log{text = "Ready to accept connections"},
-})
-if !ok {
-	// container failed to start or never became ready
+c := testcontainers.new_container("nginx:alpine")
+defer testcontainers.container_destroy(&c)
+
+testcontainers.with_exposed_port(&c, "80/tcp")
+testcontainers.with_env(&c, "SOME_VAR", "value")
+testcontainers.with_wait(&c, testcontainers.Wait_Http{port = "80/tcp", path = "/", status = 200})
+
+if !testcontainers.start(&c, client) {
+	// failed to start or never became ready
 }
 defer testcontainers.remove_container(c)
 
-port, _ := testcontainers.mapped_port(c, "6379/tcp")
-// connect to 127.0.0.1:port
+port, _ := testcontainers.mapped_port(c, "80/tcp") // -> ephemeral host port
+// connect to testcontainers.host(c):port
 ```
 
-### The builder
+`start` does everything — ensures the reaper, pulls the image, creates + starts the container, and waits for the configured readiness strategy.
 
-For incremental construction, use the `Generic_Container` builder:
-
-```odin
-gc := testcontainers.new_container("nginx:alpine")
-defer testcontainers.container_destroy(&gc)
-
-testcontainers.with_exposed_port(&gc, "80/tcp")
-testcontainers.with_env(&gc, "NGINX_PORT", "80")
-testcontainers.with_wait(&gc, testcontainers.Wait_Http{port = "80/tcp", path = "/", status = 200})
-
-c, ok := testcontainers.start(&gc, client)
-defer testcontainers.remove_container(c)
-```
-
-Builder helpers (each returns the builder pointer, so they nest; statement style reads best):
+Configuration helpers (each returns the container pointer, so they nest; statement style reads best):
 
 | Helper | Purpose |
 |---|---|
-| `with_exposed_port(&gc, "6379/tcp")` | publish a container port to an ephemeral host port |
-| `with_env(&gc, "KEY", "VALUE")` | set an environment variable |
-| `with_cmd(&gc, "arg1", "arg2")` | override the container command |
-| `with_name(&gc, "my-container")` | set a fixed name (Docker auto-names otherwise) |
-| `with_healthcheck(&gc, "CMD-SHELL", "pg_isready")` | define a Docker HEALTHCHECK |
-| `with_wait(&gc, strategy)` | set the readiness strategy |
-| `with_startup_timeout(&gc, 30 * time.Second)` | cap how long to wait for readiness |
+| `with_exposed_port(&c, "6379/tcp")` | publish a container port to an ephemeral host port |
+| `with_env(&c, "KEY", "VALUE")` | set an environment variable |
+| `with_cmd(&c, "arg1", "arg2")` | override the container command |
+| `with_name(&c, "my-container")` | set a fixed name (Docker auto-names otherwise) |
+| `with_healthcheck(&c, "CMD-SHELL", "pg_isready")` | define a Docker HEALTHCHECK |
+| `with_wait(&c, strategy)` | set the readiness strategy |
+| `with_startup_timeout(&c, 30 * time.Second)` | cap how long to wait for readiness |
 
 ### Wait strategies
 
-A started container is not necessarily *ready*. Pick the signal that actually means "ready":
+A started container is not necessarily *ready*. Set the signal that actually means "ready" with `with_wait`; `start` waits on it, and you can re-check anytime with `wait_until_ready(c)`.
 
 ```odin
 // TCP: a mapped port accepts a connection
@@ -141,20 +129,37 @@ testcontainers.Wait_Http{port = "80/tcp", path = "/health", status = 200}
 
 // Healthcheck: the container's Docker HEALTHCHECK reports "healthy"
 testcontainers.Wait_Healthcheck{}
+
+// Func: your own probe, polled until it returns true
+testcontainers.Wait_Func{probe = my_probe}
 ```
 
-`Wait_Healthcheck` (paired with `with_healthcheck`) is the most reliable for databases — e.g. Postgres logs `"ready to accept connections"` *twice* during first-time init, which fools naive log-waiting.
+#### Custom waits
+
+`Wait_Func` makes readiness fully extensible — a module or an application can register any probe. It receives the live container, so it can read mapped ports and configured env:
+
+```odin
+my_probe :: proc(c: ^testcontainers.Container, user_data: rawptr) -> bool {
+	port, ok := testcontainers.mapped_port(c^, "5432/tcp")
+	if !ok { return false }
+	// ...attempt a real connection / handshake against 127.0.0.1:port...
+	return connected
+}
+
+testcontainers.with_wait(&c, testcontainers.Wait_Func{probe = my_probe})
+```
+
+The Postgres module (below) uses exactly this — its readiness check is a `Wait_Func` that performs the Postgres v3 startup handshake.
 
 ### Lower-level verbs
 
-`run` is built from composable pieces you can call directly:
+Beyond `start`, you can drive pieces directly:
 
 ```odin
 testcontainers.pull_image(client, "redis:alpine")
-c, _ := testcontainers.create_container(client, req)
-testcontainers.start_container(c)
 insp, _ := testcontainers.inspect_container(c)   // typed Inspect: State, Health, Ports
 port, _ := testcontainers.mapped_port(c, "6379/tcp")
+val, _  := testcontainers.container_env(c, "POSTGRES_USER")
 testcontainers.remove_container(c)
 ```
 
@@ -181,19 +186,19 @@ pg, ok := postgres.start(client, postgres.Config{
 	password = "secret",             // default "postgres"
 	database = "appdb",              // default = user
 })
-defer postgres.stop(pg)
+defer postgres.stop(&pg)
 
 url := postgres.connection_string(pg)
-// pg.host, pg.port, pg.user, pg.password, pg.database are also available
+// pg is a Container too: testcontainers.mapped_port(pg, "5432/tcp"), etc.
 ```
 
-Readiness is gated on a `pg_isready` healthcheck, so by the time `start` returns the server genuinely accepts connections.
+Readiness is gated on a custom `Wait_Func` that performs the Postgres v3 startup handshake — a real connection test — so by the time `start` returns the server genuinely accepts connections.
 
 ## Cleanup & crash safety
 
 Two layers:
 
-1. **Explicit** — `remove_container(c)` / `postgres.stop(pg)`, typically via `defer`.
+1. **Explicit** — `remove_container(c)` / `postgres.stop(&pg)`, typically via `defer`.
 2. **Ryuk reaper** — for everything `defer` can't cover (panics, `os.exit`, `kill -9`).
 
 On first container creation the library starts the `testcontainers/ryuk` sidecar and holds a TCP connection to it, registering a per-process session label. Every container the library creates is tagged with that label. When your process dies and the connection drops, Ryuk reaps every container carrying the label. This is the only cleanup that survives a hard crash — and it's why you should never rely on `defer` alone.
@@ -240,6 +245,7 @@ Starts Postgres, prints its connection string, and proves it by performing the P
 - **Unix sockets only** — a `tcp://` `DOCKER_HOST` resolves but the transport can't dial it yet.
 - **No streaming** — responses are read fully, so live log-follow / pull-progress aren't available (readiness polls instead).
 - **One connection per request** — no HTTP keep-alive yet.
+- **Host-side connect has no timeout** — all daemon-socket I/O is bounded (the unix connect uses non-blocking connect + `poll()`; recv/send use inactivity timeouts), but the host-side `net.dial_tcp` to *mapped ports* during readiness probes isn't bounded yet (`core:net` doesn't expose a connect timeout). Rare in practice (localhost connects succeed or refuse immediately); bounding it would mean reimplementing that dial over `core:sys/posix`.
 - **No container `exec`** — out of scope by design. Talk to services over their mapped ports with a real client library (e.g. a database package), not by shelling into the container.
 - More module presets (Redis, MySQL, …) welcome.
 

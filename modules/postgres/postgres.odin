@@ -1,13 +1,14 @@
 package postgres
 
-// Postgres module preset for odin-test-containers. Brings up a throwaway
-// Postgres, waits until it genuinely accepts connections (via a pg_isready
-// HEALTHCHECK — more reliable than log-waiting, since Postgres logs
-// "ready to accept connections" twice during first-time init), and hands back
-// a typed handle with a connection string.
+// Postgres module preset. A Postgres IS a testcontainers.Container (embedded),
+// configured with the right env and a custom readiness probe that performs the
+// Postgres v3 startup handshake — a real connection test, registered as a
+// Wait_Func. connection_string and friends read back the config from the
+// container, so there's no duplicated state.
 
 import "core:fmt"
-import "core:strings"
+import "core:net"
+import "core:time"
 
 import testcontainers "testcontainers:."
 
@@ -21,57 +22,104 @@ Config :: struct {
 }
 
 Postgres :: struct {
-	container: testcontainers.Container,
-	host:      string,
-	port:      int,
-	user:      string,
-	password:  string,
-	database:  string,
+	using container: testcontainers.Container,
 }
 
-start :: proc(client: testcontainers.Client, config := Config{}, allocator := context.allocator) -> (pg: Postgres, ok: bool) {
+start :: proc(
+	client: testcontainers.Client,
+	config := Config{},
+	allocator := context.allocator,
+) -> (
+	pg: Postgres,
+	ok: bool,
+) {
 	image := config.image if config.image != "" else DEFAULT_IMAGE
 	user := config.user if config.user != "" else "postgres"
 	password := config.password if config.password != "" else "postgres"
 	database := config.database if config.database != "" else user
 
-	gc := testcontainers.new_container(image, allocator)
-	defer testcontainers.container_destroy(&gc)
-	testcontainers.with_exposed_port(&gc, "5432/tcp")
-	testcontainers.with_env(&gc, "POSTGRES_USER", user)
-	testcontainers.with_env(&gc, "POSTGRES_PASSWORD", password)
-	testcontainers.with_env(&gc, "POSTGRES_DB", database)
-	// pg_isready returns 0 only once Postgres is truly accepting connections.
-	testcontainers.with_healthcheck(&gc, "CMD-SHELL", fmt.tprintf("pg_isready -U %s -d %s", user, database))
-	testcontainers.with_wait(&gc, testcontainers.Wait_Healthcheck{})
+	c := testcontainers.new_container(image, allocator)
+	testcontainers.with_exposed_port(&c, "5432/tcp")
+	testcontainers.with_env(&c, "POSTGRES_USER", user)
+	testcontainers.with_env(&c, "POSTGRES_PASSWORD", password)
+	testcontainers.with_env(&c, "POSTGRES_DB", database)
+	// Readiness = the server completes the Postgres v3 startup handshake. This
+	// is a stronger signal than a port check and is fully self-contained.
+	testcontainers.with_wait(&c, testcontainers.Wait_Func{probe = pg_ready})
 
-	c := testcontainers.start(&gc, client, allocator) or_return
-	port := testcontainers.mapped_port(c, "5432/tcp") or_return
-
-	return Postgres {
-			container = c,
-			host = "127.0.0.1",
-			port = port,
-			user = strings.clone(user, allocator),
-			password = strings.clone(password, allocator),
-			database = strings.clone(database, allocator),
-		},
-		true
+	if !testcontainers.start(&c, client) {
+		testcontainers.container_destroy(&c)
+		return {}, false
+	}
+	return Postgres{container = c}, true
 }
 
-stop :: proc(pg: Postgres) {
-	testcontainers.remove_container(pg.container)
+stop :: proc(pg: ^Postgres) {
+	testcontainers.remove_container(pg^) // value subtype: Postgres -> Container
+	testcontainers.container_destroy(pg) // pointer subtype: ^Postgres -> ^Container
 }
 
 // postgresql://user:password@host:port/database?sslmode=disable
 connection_string :: proc(pg: Postgres, allocator := context.allocator) -> string {
+	user, _ := testcontainers.container_env(pg, "POSTGRES_USER")
+	password, _ := testcontainers.container_env(pg, "POSTGRES_PASSWORD")
+	database, _ := testcontainers.container_env(pg, "POSTGRES_DB")
+	port, _ := testcontainers.mapped_port(pg, "5432/tcp")
 	return fmt.aprintf(
 		"postgresql://%s:%s@%s:%d/%s?sslmode=disable",
-		pg.user,
-		pg.password,
-		pg.host,
-		pg.port,
-		pg.database,
+		user,
+		password,
+		testcontainers.host(pg),
+		port,
+		database,
 		allocator = allocator,
 	)
+}
+
+// --- Custom readiness probe (registered as a Wait_Func) ------------------
+
+// Ready when the mapped port speaks the Postgres protocol: we send a v3
+// StartupMessage and the server replies with an Authentication ('R') message.
+@(private)
+pg_ready :: proc(c: ^testcontainers.Container, user_data: rawptr) -> bool {
+	user, _ := testcontainers.container_env(c^, "POSTGRES_USER")
+	database, _ := testcontainers.container_env(c^, "POSTGRES_DB")
+	port, ok := testcontainers.mapped_port(c^, "5432/tcp")
+	if !ok {
+		return false
+	}
+	return pg_handshake_ok(port, user, database)
+}
+
+@(private)
+pg_handshake_ok :: proc(port: int, user, database: string) -> bool {
+	sock, derr := net.dial_tcp(net.Endpoint{address = net.IP4_Loopback, port = port})
+	if derr != nil {
+		return false
+	}
+	defer net.close(sock)
+	net.set_option(sock, .Receive_Timeout, 2 * time.Second)
+
+	// StartupMessage: Int32 length | Int32 protocol(196608) | params | \0
+	params := fmt.tprintf("user\x00%s\x00database\x00%s\x00\x00", user, database)
+	msg_len := u32(4 + 4 + len(params))
+	msg := make([]u8, msg_len, context.temp_allocator)
+	be32(msg[0:4], msg_len)
+	be32(msg[4:8], 196608)
+	copy(msg[8:], params)
+	if _, serr := net.send_tcp(sock, msg); serr != nil {
+		return false
+	}
+
+	resp: [16]u8
+	n, rerr := net.recv_tcp(sock, resp[:])
+	return rerr == nil && n >= 1 && resp[0] == 'R'
+}
+
+@(private)
+be32 :: proc(b: []u8, v: u32) {
+	b[0] = u8(v >> 24)
+	b[1] = u8(v >> 16)
+	b[2] = u8(v >> 8)
+	b[3] = u8(v)
 }

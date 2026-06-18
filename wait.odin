@@ -1,7 +1,8 @@
 package testcontainers
 
 // Readiness strategies. A container that is "started" is not necessarily
-// "ready" — these poll until it is (or the timeout elapses).
+// "ready" — wait_until_ready polls the container's configured strategy until it
+// is (or the timeout elapses).
 
 import "core:bytes"
 import "core:fmt"
@@ -11,12 +12,25 @@ import "core:time"
 DEFAULT_STARTUP_TIMEOUT :: 60 * time.Second
 @(private)
 POLL_INTERVAL :: 200 * time.Millisecond
+// recv/send timeout for host-side probe connections (mapped ports).
+@(private)
+PROBE_TIMEOUT :: 10 * time.Second
+
+// Bound recv/send on a host-side probe socket so a half-open port-forward
+// (proxy accepted the connection but the backend isn't talking yet) can't hang
+// a readiness probe past its poll interval.
+@(private)
+set_net_timeouts :: proc(sock: net.TCP_Socket, d: time.Duration) {
+	net.set_option(sock, .Receive_Timeout, d)
+	net.set_option(sock, .Send_Timeout, d)
+}
 
 Wait_Strategy :: union {
 	Wait_Port,        // a mapped container port accepts a TCP connection
 	Wait_Log,         // a substring appears in the container's logs
 	Wait_Http,        // an HTTP GET to a mapped port returns an expected status
 	Wait_Healthcheck, // the container's Docker HEALTHCHECK reports healthy
+	Wait_Func,        // a user-supplied probe (custom readiness check)
 }
 
 Wait_Port :: struct {
@@ -35,10 +49,23 @@ Wait_Http :: struct {
 
 Wait_Healthcheck :: struct {}
 
-wait_until_ready :: proc(c: Container, strategy: Wait_Strategy, timeout: time.Duration) -> (ready: bool) {
+// Custom readiness: `probe` is called repeatedly until it returns true (or the
+// timeout elapses). It receives the live container, so it can look up mapped
+// ports, env, etc. `user_data` is passed through untouched for extra state.
+Wait_Func :: struct {
+	probe:     proc(c: ^Container, user_data: rawptr) -> bool,
+	user_data: rawptr,
+}
+
+// Poll the container's configured wait strategy until ready. Uses the
+// container's startup_timeout (or DEFAULT_STARTUP_TIMEOUT). Safe to call again
+// after start() to re-verify readiness.
+wait_until_ready :: proc(c: Container) -> (ready: bool) {
+	timeout := c.startup_timeout if c.startup_timeout > 0 else DEFAULT_STARTUP_TIMEOUT
+	cc := c
 	start := time.tick_now()
 	for time.tick_since(start) < timeout {
-		if ready_once(c, strategy) {
+		if ready_once(&cc) {
 			return true
 		}
 		time.sleep(POLL_INTERVAL)
@@ -46,19 +73,19 @@ wait_until_ready :: proc(c: Container, strategy: Wait_Strategy, timeout: time.Du
 	return false
 }
 
-// A single readiness probe. Returns true the instant the strategy is satisfied.
+// A single readiness probe against the container's configured strategy.
 @(private)
-ready_once :: proc(c: Container, strategy: Wait_Strategy) -> bool {
-	switch s in strategy {
+ready_once :: proc(c: ^Container) -> bool {
+	switch s in c.wait {
 	case Wait_Port:
-		hp, ok := mapped_port(c, s.port)
+		hp, ok := mapped_port(c^, s.port)
 		return ok && tcp_connectable(hp)
 
 	case Wait_Log:
-		return log_contains(c, transmute([]u8)s.text)
+		return log_contains(c^, transmute([]u8)s.text)
 
 	case Wait_Http:
-		hp, ok := mapped_port(c, s.port)
+		hp, ok := mapped_port(c^, s.port)
 		if !ok {
 			return false
 		}
@@ -72,11 +99,17 @@ ready_once :: proc(c: Container, strategy: Wait_Strategy) -> bool {
 		return status == s.status
 
 	case Wait_Healthcheck:
-		insp, ok := inspect_container(c)
+		insp, ok := inspect_container(c^)
 		if !ok {
 			return false
 		}
 		return insp.State.Health.Status == "healthy"
+
+	case Wait_Func:
+		if s.probe == nil {
+			return true
+		}
+		return s.probe(c, s.user_data)
 	}
 	return true // nil strategy: nothing to wait for
 }
@@ -114,6 +147,7 @@ http_get_status :: proc(host_port: int, path: string) -> (status: int, ok: bool)
 		return 0, false
 	}
 	defer net.close(sock)
+	set_net_timeouts(sock, PROBE_TIMEOUT)
 
 	req := fmt.tprintf("GET %s HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n", path)
 	if _, serr := net.send_tcp(sock, transmute([]u8)req); serr != nil {
