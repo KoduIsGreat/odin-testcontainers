@@ -1,0 +1,5 @@
+# Odin build output
+*.bin
+*.o
+*.exe
+*.out
